@@ -691,6 +691,10 @@ def main() -> None:
                     col_right.container(),
                     custom_prompt=st.session_state.get("custom_prompt", ""),
                 )
+                # Rerun SOMENTE se pipeline teve sucesso (para exibir download)
+                # Se houve erro, NÃO fazer rerun (erro já visível na tela)
+                if st.session_state.get("pipeline_done"):
+                    st.rerun()
 
     with col_right:
         if not st.session_state.get("pipeline_done"):
