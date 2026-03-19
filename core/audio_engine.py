@@ -26,12 +26,44 @@ class TranscriptionSegment:
     text: str
 
 
-def split_stereo_channels(input_path: str) -> tuple[str, str]:
+def _get_audio_channels(input_path: str) -> int:
     """
-    Separa um arquivo de áudio estéreo em dois canais mono via FFMPEG.
+    Detecta o número de canais do arquivo de áudio usando ffprobe.
 
     Args:
-        input_path: Caminho absoluto do arquivo de áudio estéreo em /tmp/.
+        input_path: Caminho do arquivo de áudio.
+
+    Returns:
+        Número de canais (1=mono, 2=estéreo).
+    """
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "a:0",
+        "-show_entries", "stream=channels",
+        "-of", "csv=p=0",
+        input_path,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30,
+        )
+        channels = int(result.stdout.strip())
+        logger.info("Áudio detectado: %d canal(is)", channels)
+        return channels
+    except (ValueError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Não foi possível detectar canais (%s). Assumindo estéreo.", exc)
+        return 2
+
+
+def split_stereo_channels(input_path: str) -> tuple[str, str]:
+    """
+    Separa um arquivo de áudio em dois canais mono via FFMPEG.
+
+    Suporta tanto áudio estéreo (separa L/R) quanto mono (duplica para ambos).
+
+    Args:
+        input_path: Caminho absoluto do arquivo de áudio em /tmp/.
 
     Returns:
         Tupla com os caminhos (left_path, right_path) dos canais separados.
@@ -46,14 +78,29 @@ def split_stereo_channels(input_path: str) -> tuple[str, str]:
     left_path = "/tmp/left_vm.mp3"
     right_path = "/tmp/right_col.mp3"
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-map_channel", "0.0.0", left_path,
-        "-map_channel", "0.0.1", right_path,
-    ]
+    channels = _get_audio_channels(input_path)
 
-    logger.info("Executando FFMPEG para separação de canais: %s", " ".join(cmd))
+    if channels >= 2:
+        # Estéreo: separa canal esquerdo (V.·.M.·.) e direito (Colunas)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-map_channel", "0.0.0", left_path,
+            "-map_channel", "0.0.1", right_path,
+        ]
+        logger.info("Áudio estéreo — separando canais L/R")
+    else:
+        # Mono: converte para mono mp3 e duplica para ambos os caminhos
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-ac", "1",
+            "-q:a", "2",
+            left_path,
+        ]
+        logger.info("Áudio mono — será usado como canal único (V.·.M.·. + Colunas)")
+
+    logger.info("Executando FFMPEG: %s", " ".join(cmd))
 
     result = subprocess.run(
         cmd,
@@ -65,10 +112,16 @@ def split_stereo_channels(input_path: str) -> tuple[str, str]:
     if result.returncode != 0:
         logger.error("FFMPEG stderr: %s", result.stderr)
         raise RuntimeError(
-            f"FFMPEG falhou (código {result.returncode}): {result.stderr[:500]}"
+            f"FFMPEG falhou (código {result.returncode}): {result.stderr[-500:]}"
         )
 
-    logger.info("Canais separados com sucesso: L=%s, R=%s", left_path, right_path)
+    # Se mono, copia o mesmo arquivo para o canal direito
+    if channels < 2:
+        import shutil
+        shutil.copy2(left_path, right_path)
+        logger.info("Mono: canal duplicado para L=%s e R=%s", left_path, right_path)
+
+    logger.info("Canais processados com sucesso: L=%s, R=%s", left_path, right_path)
     return left_path, right_path
 
 
