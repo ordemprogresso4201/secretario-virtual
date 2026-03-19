@@ -1,0 +1,105 @@
+# ============================================================================
+# CLOUD BUILD — Secretaria Digital IA
+# ============================================================================
+# Pipeline automatizado: Build Docker → Push Artifact Registry → Deploy Cloud Run
+#
+# USO:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_GROQ_API_KEY="xxx",_GEMINI_API_KEY="xxx",_DRIVE_FOLDER_ID="xxx",_CALENDAR_ID="xxx"
+#
+# PRÉ-REQUISITOS (executar UMA VEZ antes do primeiro deploy):
+#   1. gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com drive.googleapis.com calendar-json.googleapis.com
+#   2. gcloud artifacts repositories create secretaria-digital --repository-format=docker --location=us-central1
+#   3. Conceder papel "Cloud Run Admin" e "Service Account User" à SA do Cloud Build:
+#      gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')@cloudbuild.gserviceaccount.com" --role="roles/run.admin"
+#      gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')@cloudbuild.gserviceaccount.com" --role="roles/iam.serviceAccountUser"
+# ============================================================================
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE_NAME: secretaria-digital-ia
+  _REPOSITORY: secretaria-digital
+  _MEMORY: 1Gi
+  _CPU: "2"
+  _TIMEOUT: "600"
+  _MAX_INSTANCES: "3"
+  _CONCURRENCY: "1"
+  # --- Variáveis sensíveis (passar via --substitutions) ---
+  _GROQ_API_KEY: ""
+  _GEMINI_API_KEY: ""
+  _DRIVE_FOLDER_ID: ""
+  _CALENDAR_ID: ""
+
+steps:
+  # ── STEP 1: Build da imagem Docker ──
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-image"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:latest"
+      - "."
+
+  # ── STEP 2: Push para Artifact Registry ──
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-image"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}"
+
+  # ── STEP 3: Deploy no Cloud Run ──
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-cloud-run"
+    entrypoint: "gcloud"
+    args:
+      - "run"
+      - "deploy"
+      - "${_SERVICE_NAME}"
+      - "--image"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}"
+      - "--platform"
+      - "managed"
+      - "--region"
+      - "${_REGION}"
+      - "--allow-unauthenticated"
+      - "--memory"
+      - "${_MEMORY}"
+      - "--cpu"
+      - "${_CPU}"
+      - "--timeout"
+      - "${_TIMEOUT}"
+      - "--max-instances"
+      - "${_MAX_INSTANCES}"
+      - "--min-instances"
+      - "0"
+      - "--concurrency"
+      - "${_CONCURRENCY}"
+      - "--set-env-vars"
+      - "GROQ_API_KEY=${_GROQ_API_KEY},GEMINI_API_KEY=${_GEMINI_API_KEY},DRIVE_FOLDER_ID=${_DRIVE_FOLDER_ID},CALENDAR_ID=${_CALENDAR_ID}"
+
+  # ── STEP 4: Exibir URL do serviço ──
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "show-url"
+    entrypoint: "gcloud"
+    args:
+      - "run"
+      - "services"
+      - "describe"
+      - "${_SERVICE_NAME}"
+      - "--region"
+      - "${_REGION}"
+      - "--format"
+      - "value(status.url)"
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1200s
