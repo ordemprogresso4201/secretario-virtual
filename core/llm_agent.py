@@ -7,6 +7,7 @@ atas formatadas segundo o rito e protocolo maçônico oficial.
 
 import logging
 import os
+import time
 
 from google import genai
 from google.genai import types
@@ -122,24 +123,43 @@ def format_ata(
         template_type,
     )
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.3,
-                max_output_tokens=8192,
-            ),
-        )
+    max_retries = 3
+    retry_delays = [15, 30, 60]  # seconds
 
-        ata_text = response.text
-        if not ata_text:
-            raise RuntimeError("Gemini retornou resposta vazia.")
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.3,
+                    max_output_tokens=8192,
+                ),
+            )
 
-        logger.info("Ata gerada com sucesso pelo Gemini (%d caracteres).", len(ata_text))
-        return ata_text
+            ata_text = response.text
+            if not ata_text:
+                raise RuntimeError("Gemini retornou resposta vazia.")
 
-    except Exception as exc:
-        logger.error("Erro na chamada ao Gemini: %s", exc)
-        raise RuntimeError(f"Falha ao gerar ata via Gemini: {exc}") from exc
+            logger.info("Ata gerada com sucesso pelo Gemini (%d caracteres).", len(ata_text))
+            return ata_text
+
+        except Exception as exc:
+            error_str = str(exc)
+
+            # Retry on 429 (rate limit / quota exceeded)
+            if "429" in error_str and attempt < max_retries:
+                delay = retry_delays[attempt]
+                logger.warning(
+                    "Gemini 429 (tentativa %d/%d). Aguardando %ds...",
+                    attempt + 1, max_retries, delay,
+                )
+                time.sleep(delay)
+                continue
+
+            logger.error("Erro na chamada ao Gemini: %s", exc)
+            raise RuntimeError(f"Falha ao gerar ata via Gemini: {exc}") from exc
+
+    # Guard: should never reach here (loop always returns or raises)
+    raise RuntimeError("Todas as tentativas de chamada ao Gemini falharam.")
