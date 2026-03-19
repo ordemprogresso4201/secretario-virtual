@@ -86,6 +86,7 @@ def format_ata(
     raw_transcript: str,
     template_type: str,
     gemini_api_key: str,
+    custom_prompt: str = "",
 ) -> str:
     """
     Envia a transcrição bruta ao Gemini 2.0 Flash e retorna a ata formatada.
@@ -94,6 +95,7 @@ def format_ata(
         raw_transcript: Texto da transcrição mesclada com timestamps e falantes.
         template_type: Tipo de sessão selecionado pelo usuário.
         gemini_api_key: Chave da API Gemini (Google AI Studio).
+        custom_prompt: Prompt do sistema customizado (se vazio, usa SYSTEM_PROMPT padrão).
 
     Returns:
         Texto da ata formatada segundo o rito maçônico.
@@ -105,6 +107,7 @@ def format_ata(
     if not raw_transcript.strip():
         raise ValueError("A transcrição enviada ao Gemini está vazia.")
 
+    active_prompt = custom_prompt.strip() if custom_prompt.strip() else SYSTEM_PROMPT
     template_desc = TEMPLATES.get(template_type, template_type)
 
     client = genai.Client(api_key=gemini_api_key)
@@ -132,7 +135,7 @@ def format_ata(
                 model="gemini-2.0-flash",
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
+                    system_instruction=active_prompt,
                     temperature=0.3,
                     max_output_tokens=8192,
                 ),

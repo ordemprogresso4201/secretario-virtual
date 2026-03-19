@@ -16,7 +16,7 @@ from core.audio_engine import (
     transcribe_channels,
 )
 from core.gcp_services import patch_calendar_event, upload_to_drive
-from core.llm_agent import TEMPLATES, format_ata
+from core.llm_agent import SYSTEM_PROMPT, TEMPLATES, format_ata
 from core.pdf_builder import generate_pdf
 
 # --- Logging ---
@@ -238,6 +238,36 @@ def _inject_css() -> None:
 
     /* Columns gap */
     [data-testid="stHorizontalBlock"] { gap: 2rem !important; }
+
+    /* ── Tradução do File Uploader para PT-BR ── */
+    [data-testid="stFileUploaderDropzoneInstructions"] div:has(> small)::before {
+        content: "Arraste e solte o arquivo aqui";
+        font-size: 0.9rem;
+        display: block;
+        color: #94a3b8;
+    }
+    [data-testid="stFileUploaderDropzoneInstructions"] span {
+        font-size: 0 !important;
+        visibility: hidden;
+        position: absolute;
+    }
+    [data-testid="stFileUploaderDropzoneInstructions"] small {
+        font-size: 0 !important;
+        visibility: hidden;
+    }
+    [data-testid="stFileUploaderDropzoneInstructions"] small::before {
+        content: "Limite de 200MB por arquivo";
+        font-size: 0.75rem;
+        visibility: visible;
+        color: #475569;
+    }
+    [data-testid="stFileUploaderDropzone"] button {
+        font-size: 0 !important;
+    }
+    [data-testid="stFileUploaderDropzone"] button::after {
+        content: "Selecionar arquivo";
+        font-size: 0.9rem !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -250,8 +280,7 @@ def _render_header() -> None:
             "<h1 style='margin:0; font-size:2rem; font-weight:700; color:#fff;'>"
             "✦ LÚMEN"
             "<span style='color:#818cf8; font-weight:300;'> Secretaria Digital</span>"
-            "</h1>"
-            "<p style='margin:0; color:#64748b; font-size:0.85rem;'>Automação inteligente de atas</p>",
+            "</h1>",
             unsafe_allow_html=True,
         )
     with hdr_right:
@@ -284,6 +313,7 @@ def _run_pipeline(
     enable_drive: bool,
     enable_calendar: bool,
     log_container,
+    custom_prompt: str = "",
 ) -> None:
     input_path = f"/tmp/upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
     left_path = "/tmp/left_vm.mp3"
@@ -338,7 +368,7 @@ def _run_pipeline(
         with status_steps:
             st.write("📝 **Formatação da Ata** — Aplicando estrutura oficial...")
         progress_bar.progress(55, text="Formatando ata com IA...")
-        ata_text = format_ata(merged_text, template, env["GEMINI_API_KEY"])
+        ata_text = format_ata(merged_text, template, env["GEMINI_API_KEY"], custom_prompt=custom_prompt)
         with status_steps:
             st.write(f"✅ Ata formatada ({len(ata_text)} caracteres).")
         progress_bar.progress(75, text="Ata formatada.")
@@ -423,6 +453,107 @@ def _run_pipeline(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MAIN
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _render_sidebar(env: dict[str, str]) -> dict[str, str]:
+    """Sidebar com configurações de templates e prompt do sistema."""
+    with st.sidebar:
+        st.markdown(
+            "<h2 style='margin:0; font-size:1.3rem; font-weight:700; color:#fff;'>"
+            "⚙️ Configurações</h2>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<hr style='margin:0.5rem 0 1rem 0;'>", unsafe_allow_html=True)
+
+        # ── Gerenciar Templates ──
+        st.markdown(
+            "<p style='color:#818cf8; font-size:0.75rem; font-weight:700; "
+            "letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.5rem;'>"
+            "📋 Tipos de Sessão</p>",
+            unsafe_allow_html=True,
+        )
+
+        # Inicializar templates editáveis no session_state
+        if "custom_templates" not in st.session_state:
+            st.session_state["custom_templates"] = dict(TEMPLATES)
+
+        current_templates = st.session_state["custom_templates"]
+
+        # Exibir templates existentes
+        templates_to_remove = []
+        for key, value in current_templates.items():
+            with st.expander(f"📄 {key}", expanded=False):
+                new_value = st.text_input(
+                    "Descrição completa",
+                    value=value,
+                    key=f"tpl_{key}",
+                    label_visibility="collapsed",
+                )
+                if new_value != value:
+                    current_templates[key] = new_value
+                if st.button("🗑️ Remover", key=f"del_{key}", use_container_width=True):
+                    templates_to_remove.append(key)
+
+        for k in templates_to_remove:
+            current_templates.pop(k, None)
+            st.rerun()
+
+        # Adicionar novo template
+        st.markdown("<div style='height:0.5rem;'></div>", unsafe_allow_html=True)
+        with st.expander("➕ Adicionar novo tipo", expanded=False):
+            new_key = st.text_input("Nome (exibição)", placeholder="Ex: Sessão Econômica")
+            new_val = st.text_input("Descrição", placeholder="Ex: Sessão Econômica Ordinária")
+            if st.button("✅ Adicionar", use_container_width=True) and new_key and new_val:
+                current_templates[new_key] = new_val
+                st.rerun()
+
+        st.session_state["custom_templates"] = current_templates
+
+        st.markdown("<hr style='margin:1rem 0;'>", unsafe_allow_html=True)
+
+        # ── Prompt do Sistema (Regras de Formatação) ──
+        st.markdown(
+            "<p style='color:#818cf8; font-size:0.75rem; font-weight:700; "
+            "letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.5rem;'>"
+            "✏️ Regras de Formatação</p>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Edite o prompt enviado à IA para ajustar o formato da ata.")
+
+        if "custom_prompt" not in st.session_state:
+            st.session_state["custom_prompt"] = SYSTEM_PROMPT
+
+        edited_prompt = st.text_area(
+            "Prompt do Sistema",
+            value=st.session_state["custom_prompt"],
+            height=400,
+            label_visibility="collapsed",
+        )
+        st.session_state["custom_prompt"] = edited_prompt
+
+        col_reset, col_info = st.columns(2)
+        with col_reset:
+            if st.button("🔄 Restaurar padrão", use_container_width=True):
+                st.session_state["custom_prompt"] = SYSTEM_PROMPT
+                st.rerun()
+        with col_info:
+            st.caption(f"{len(edited_prompt)} caracteres")
+
+        st.markdown("<hr style='margin:1rem 0;'>", unsafe_allow_html=True)
+
+        # ── Info do Ambiente ──
+        st.markdown(
+            "<p style='color:#818cf8; font-size:0.75rem; font-weight:700; "
+            "letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.5rem;'>"
+            "🔗 Integrações</p>",
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Groq API: {'✅ Configurada' if env.get('GROQ_API_KEY') else '❌'}")
+        st.caption(f"Gemini API: {'✅ Configurada' if env.get('GEMINI_API_KEY') else '❌'}")
+        st.caption(f"Drive: {'✅ ' + env.get('DRIVE_FOLDER_ID', '')[:8] + '...' if env.get('DRIVE_FOLDER_ID') else '❌ Não configurado'}")
+        st.caption(f"Agenda: {'✅ Configurada' if env.get('CALENDAR_ID') else '❌ Não configurada'}")
+
+    return current_templates
+
+
 def main() -> None:
     st.set_page_config(
         page_title="LÚMEN · Secretaria Digital",
@@ -433,6 +564,9 @@ def main() -> None:
 
     _inject_css()
     env = _validate_env()
+
+    # Sidebar de configurações
+    active_templates = _render_sidebar(env)
 
     _render_header()
 
@@ -450,7 +584,7 @@ def main() -> None:
 
         template = st.selectbox(
             "Tipo de Sessão",
-            options=list(TEMPLATES.keys()),
+            options=list(active_templates.keys()),
             label_visibility="collapsed",
         )
 
@@ -555,6 +689,7 @@ def main() -> None:
                     uploaded_file, template, env,
                     enable_drive, enable_calendar,
                     col_right.container(),
+                    custom_prompt=st.session_state.get("custom_prompt", ""),
                 )
 
     with col_right:
