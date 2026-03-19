@@ -290,15 +290,20 @@ def _run_pipeline(
     right_path = "/tmp/right_col.mp3"
     pdf_path = "/tmp/ata.pdf"
 
-    for p in [input_path, left_path, right_path, pdf_path]:
+    # Registrar apenas arquivos intermediários (NÃO o PDF final)
+    for p in [input_path, left_path, right_path]:
         _register_temp(p)
+
+    # Limpar qualquer estado anterior de erro
+    st.session_state.pop("pipeline_error", None)
+    st.session_state.pop("pipeline_done", None)
 
     try:
         with open(input_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         logger.info("Áudio salvo: %s", input_path)
 
-        # ── Progresso no painel lateral ──
+        # ── Progresso no painel direito ──
         with log_container:
             st.markdown(
                 "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
@@ -344,17 +349,34 @@ def _run_pipeline(
         progress_bar.progress(80, text="Gerando PDF...")
         pdf_output = generate_pdf(ata_text, template, pdf_path)
 
+        # ── REGRA DE OURO: Salvar bytes do PDF ANTES de qualquer cleanup ──
+        pdf_bytes = b""
+        if pdf_output and os.path.exists(pdf_output):
+            with open(pdf_output, "rb") as f:
+                pdf_bytes = f.read()
+            logger.info("PDF salvo em memória (%d bytes).", len(pdf_bytes))
+
         web_view_link = ""
         if enable_drive and env.get("DRIVE_FOLDER_ID"):
-            filename = f"Ata_{template.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            web_view_link = upload_to_drive(pdf_output, filename, env["DRIVE_FOLDER_ID"])
-            with status_steps:
-                st.write("✅ PDF enviado para o Google Drive.")
+            try:
+                filename = f"Ata_{template.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                web_view_link = upload_to_drive(pdf_output, filename, env["DRIVE_FOLDER_ID"])
+                with status_steps:
+                    st.write("✅ PDF enviado para o Google Drive.")
+            except Exception as drive_exc:
+                logger.warning("Falha no upload ao Drive (não crítico): %s", drive_exc)
+                with status_steps:
+                    st.write(f"⚠️ Falha ao enviar para o Drive: {drive_exc}")
 
         if enable_calendar and env.get("CALENDAR_ID") and web_view_link:
-            patch_calendar_event(env["CALENDAR_ID"], web_view_link)
-            with status_steps:
-                st.write("✅ Agenda do Google atualizada.")
+            try:
+                patch_calendar_event(env["CALENDAR_ID"], web_view_link)
+                with status_steps:
+                    st.write("✅ Agenda do Google atualizada.")
+            except Exception as cal_exc:
+                logger.warning("Falha ao atualizar agenda (não crítico): %s", cal_exc)
+                with status_steps:
+                    st.write(f"⚠️ Falha ao atualizar agenda: {cal_exc}")
 
         progress_bar.progress(100, text="Concluído!")
 
@@ -364,23 +386,38 @@ def _run_pipeline(
 
         status_steps.update(label="✅ Processamento concluído!", state="complete")
 
-        # Store results
+        # ── Persistir resultados no session_state (REGRA DE OURO) ──
         st.session_state["pipeline_done"] = True
         st.session_state["ata_text"] = ata_text
-        st.session_state["pdf_path"] = pdf_output
+        st.session_state["pdf_bytes"] = pdf_bytes
+        st.session_state["pdf_filename"] = f"Ata_{template.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf"
         st.session_state["drive_link"] = web_view_link
         st.session_state["segments_count"] = len(segments)
 
     except Exception as exc:
-        logger.error("Erro no pipeline: %s", exc)
-        progress_bar.progress(0, text="Erro!")
-        status_steps.update(label="❌ Erro no processamento", state="error")
-        with status_steps:
-            st.error(f"**Erro:** {exc}")
-        st.error(f"❌ Erro no processamento: {exc}")
+        error_msg = str(exc)
+        logger.error("Erro no pipeline: %s", error_msg)
+
+        # ── Persistir erro no session_state para exibição garantida ──
+        st.session_state["pipeline_error"] = error_msg
+        st.session_state["pipeline_done"] = False
+
+        try:
+            progress_bar.progress(0, text="Erro no processamento!")
+            status_steps.update(label="❌ Erro no processamento", state="error")
+            with status_steps:
+                st.error(f"**Detalhes do erro:** {error_msg}")
+        except Exception:
+            pass  # UI elements may not exist if error was early
 
     finally:
         _cleanup_temp()
+        # Limpar PDF temporário também
+        try:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+        except OSError:
+            pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -445,14 +482,35 @@ def main() -> None:
 
         st.markdown("<div style='height:0.5rem;'></div>", unsafe_allow_html=True)
 
+        # ── Mensagem de erro persistente (REGRA DE OURO) ──
+        if st.session_state.get("pipeline_error"):
+            st.error(f"❌ **Erro no último processamento:** {st.session_state['pipeline_error']}")
+            if st.button("🔄 Tentar novamente", use_container_width=True):
+                st.session_state.pop("pipeline_error", None)
+                st.rerun()
+
         # ── Resultados ──
         if st.session_state.get("pipeline_done"):
             ata_text = st.session_state.get("ata_text", "")
-            pdf_path = st.session_state.get("pdf_path", "")
+            pdf_bytes = st.session_state.get("pdf_bytes", b"")
+            pdf_filename = st.session_state.get("pdf_filename", "Ata.pdf")
             drive_link = st.session_state.get("drive_link", "")
             seg_count = st.session_state.get("segments_count", 0)
 
-            st.success("✅ **Documento gerado com sucesso!** A ata foi redigida e selada nos servidores.")
+            st.success("✅ **Documento gerado com sucesso!** A ata foi redigida e está disponível para download.")
+
+            # ── Download do PDF (SEMPRE disponível) ──
+            if pdf_bytes:
+                st.download_button(
+                    "⬇️ Baixar PDF da Ata",
+                    data=pdf_bytes,
+                    file_name=pdf_filename,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                )
+            else:
+                st.warning("⚠️ O PDF não pôde ser gerado. Verifique os logs.")
 
             with st.expander(f"📝 Prévia da Ata ({len(ata_text)} caracteres, {seg_count} segmentos)"):
                 st.text_area(
@@ -463,23 +521,20 @@ def main() -> None:
                     label_visibility="collapsed",
                 )
 
-            if pdf_path and os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button(
-                        "⬇️ Baixar PDF da Ata",
-                        data=pdf_file.read(),
-                        file_name=f"Ata_{datetime.now().strftime('%Y%m%d')}.pdf",
-                        mime="application/pdf",
-                        type="primary",
-                        use_container_width=True,
-                    )
-
             if drive_link:
                 st.link_button(
                     "📁 Abrir no Google Drive",
                     url=drive_link,
                     use_container_width=True,
                 )
+
+            st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Processar novo áudio", use_container_width=True):
+                for key in ["pipeline_done", "ata_text", "pdf_bytes",
+                            "pdf_filename", "drive_link", "segments_count",
+                            "pipeline_error"]:
+                    st.session_state.pop(key, None)
+                st.rerun()
 
         elif uploaded_file is not None:
             file_mb = uploaded_file.size / (1024 * 1024)
@@ -495,12 +550,12 @@ def main() -> None:
 
             if process:
                 st.session_state["pipeline_done"] = False
+                st.session_state.pop("pipeline_error", None)
                 _run_pipeline(
                     uploaded_file, template, env,
                     enable_drive, enable_calendar,
                     col_right.container(),
                 )
-                st.rerun()
 
     with col_right:
         if not st.session_state.get("pipeline_done"):
