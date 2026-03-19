@@ -1,5 +1,5 @@
 """
-Agente LLM — Integração com Gemini 1.5 Flash para formatação litúrgica de atas maçônicas.
+Agente LLM — Integração com Gemini 2.0 Flash para formatação litúrgica de atas maçônicas.
 
 Utiliza a biblioteca google-genai para enviar transcrições brutas e receber
 atas formatadas segundo o rito e protocolo maçônico oficial.
@@ -87,7 +87,7 @@ def format_ata(
     gemini_api_key: str,
 ) -> str:
     """
-    Envia a transcrição bruta ao Gemini 1.5 Flash e retorna a ata formatada.
+    Envia a transcrição bruta ao Gemini 2.0 Flash e retorna a ata formatada.
 
     Args:
         raw_transcript: Texto da transcrição mesclada com timestamps e falantes.
@@ -117,14 +117,14 @@ def format_ata(
     )
 
     logger.info(
-        "Enviando transcrição ao Gemini 1.5 Flash (%d caracteres, template: %s).",
+        "Enviando transcrição ao Gemini 2.0 Flash (%d caracteres, template: %s).",
         len(raw_transcript),
         template_type,
     )
 
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
