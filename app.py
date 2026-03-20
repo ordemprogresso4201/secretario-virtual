@@ -306,6 +306,40 @@ STEP_LABELS = [
 ]
 
 
+def _render_step_card(placeholder, label: str, desc: str, state: str = "idle") -> None:
+    """Renderiza um step card em 3 estados: idle, active, done."""
+    if state == "idle":
+        placeholder.markdown(
+            f"<div style='padding:0.75rem 1rem; margin-bottom:0.5rem; "
+            f"background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); "
+            f"border-radius:12px; opacity:0.35;'>"
+            f"<div style='font-size:0.85rem; font-weight:600; color:#e2e8f0;'>⬡ {label}</div>"
+            f"<div style='font-size:0.75rem; color:#64748b; margin-top:2px;'>{desc}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    elif state == "active":
+        placeholder.markdown(
+            f"<div style='padding:0.75rem 1rem; margin-bottom:0.5rem; "
+            f"background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.3); "
+            f"border-radius:12px; animation:pulseStep 1.5s ease-in-out infinite;'>"
+            f"<div style='font-size:0.85rem; font-weight:600; color:#818cf8;'>◆ {label}</div>"
+            f"<div style='font-size:0.75rem; color:#94a3b8; margin-top:2px;'>{desc}</div>"
+            f"</div>"
+            f"<style>@keyframes pulseStep {{ 0%,100% {{ opacity:0.7; }} 50% {{ opacity:1; }} }}</style>",
+            unsafe_allow_html=True,
+        )
+    elif state == "done":
+        placeholder.markdown(
+            f"<div style='padding:0.75rem 1rem; margin-bottom:0.5rem; "
+            f"background:rgba(16,185,129,0.05); border:1px solid rgba(16,185,129,0.15); "
+            f"border-radius:12px;'>"
+            f"<div style='font-size:0.85rem; font-weight:600; color:#34d399;'>✓ {label}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+
 def _run_pipeline(
     uploaded_file: object,
     template: str,
@@ -313,6 +347,7 @@ def _run_pipeline(
     enable_drive: bool,
     enable_calendar: bool,
     log_container,
+    step_placeholders: list | None = None,
     custom_prompt: str = "",
 ) -> None:
     input_path = f"/tmp/upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
@@ -345,7 +380,20 @@ def _run_pipeline(
             progress_bar = st.progress(0, text="Iniciando processamento...")
             status_steps = st.status("Processando áudio...", expanded=True)
 
+        # ── Atualizar step cards progressivamente ──
+        def _update_steps(active_index: int) -> None:
+            if not step_placeholders:
+                return
+            for i, (lbl, dsc) in enumerate(STEP_LABELS):
+                if i < active_index:
+                    _render_step_card(step_placeholders[i], lbl, dsc, "done")
+                elif i == active_index:
+                    _render_step_card(step_placeholders[i], lbl, dsc, "active")
+                else:
+                    _render_step_card(step_placeholders[i], lbl, dsc, "idle")
+
         # STEP 1 — Separação de canais
+        _update_steps(0)
         with status_steps:
             st.write("🎧 **Separação de Canais** — Identificando canais do áudio...")
         progress_bar.progress(10, text="Separando canais...")
@@ -355,6 +403,7 @@ def _run_pipeline(
         progress_bar.progress(25, text="Canais separados.")
 
         # STEP 2 — Transcrição
+        _update_steps(1)
         with status_steps:
             st.write("🎙️ **Transcrição de Áudio** — Convertendo fala em texto...")
         progress_bar.progress(30, text="Transcrevendo áudio...")
@@ -365,6 +414,7 @@ def _run_pipeline(
         progress_bar.progress(50, text="Transcrição concluída.")
 
         # STEP 3 — Formatação com Gemini
+        _update_steps(2)
         with status_steps:
             st.write("📝 **Formatação da Ata** — Aplicando estrutura oficial...")
         progress_bar.progress(55, text="Formatando ata com IA...")
@@ -374,6 +424,7 @@ def _run_pipeline(
         progress_bar.progress(75, text="Ata formatada.")
 
         # STEP 4 — PDF + Google
+        _update_steps(3)
         with status_steps:
             st.write("📄 **Geração de Documento** — Criando PDF e sincronizando...")
         progress_bar.progress(80, text="Gerando PDF...")
@@ -409,6 +460,7 @@ def _run_pipeline(
                     st.write(f"⚠️ Falha ao atualizar agenda: {cal_exc}")
 
         progress_bar.progress(100, text="Concluído!")
+        _update_steps(4)  # Marca todos como concluídos
 
         with status_steps:
             st.write("---")
@@ -664,7 +716,7 @@ def main() -> None:
 
             st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
             if st.button("🔄 Processar novo áudio", use_container_width=True):
-                for key in ["pipeline_done", "ata_text", "pdf_bytes",
+                for key in ["pipeline_done", "pipeline_running", "ata_text", "pdf_bytes",
                             "pdf_filename", "drive_link", "segments_count",
                             "pipeline_error"]:
                     st.session_state.pop(key, None)
@@ -684,20 +736,34 @@ def main() -> None:
 
             if process:
                 st.session_state["pipeline_done"] = False
+                st.session_state["pipeline_running"] = True
                 st.session_state.pop("pipeline_error", None)
-                _run_pipeline(
-                    uploaded_file, template, env,
-                    enable_drive, enable_calendar,
-                    col_right.container(),
-                    custom_prompt=st.session_state.get("custom_prompt", ""),
-                )
-                # Rerun SOMENTE se pipeline teve sucesso (para exibir download)
-                # Se houve erro, NÃO fazer rerun (erro já visível na tela)
-                if st.session_state.get("pipeline_done"):
-                    st.rerun()
+                st.rerun()
 
     with col_right:
-        if not st.session_state.get("pipeline_done"):
+        if st.session_state.get("pipeline_running"):
+            # ── Criar placeholders para step cards dinâmicos ──
+            step_placeholders = []
+            for lbl, dsc in STEP_LABELS:
+                ph = st.empty()
+                _render_step_card(ph, lbl, dsc, "idle")
+                step_placeholders.append(ph)
+
+            # Executar pipeline com os placeholders
+            st.session_state["pipeline_running"] = False
+            _run_pipeline(
+                uploaded_file, template, env,
+                enable_drive, enable_calendar,
+                st.container(),
+                step_placeholders=step_placeholders,
+                custom_prompt=st.session_state.get("custom_prompt", ""),
+            )
+            # Rerun SOMENTE se pipeline teve sucesso (para exibir download)
+            # Se houve erro, NÃO fazer rerun (erro já visível na tela)
+            if st.session_state.get("pipeline_done"):
+                st.rerun()
+
+        elif not st.session_state.get("pipeline_done"):
             st.markdown(
                 "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
                 "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:1rem;'>"
@@ -724,7 +790,6 @@ def main() -> None:
 
         else:
             # Show completed state
-            drive_link = st.session_state.get("drive_link", "")
             st.markdown(
                 "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
                 "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:1rem;'>"
@@ -733,14 +798,7 @@ def main() -> None:
             )
 
             for label, _ in STEP_LABELS:
-                st.markdown(
-                    f"<div style='padding:0.75rem 1rem; margin-bottom:0.5rem; "
-                    f"background:rgba(16,185,129,0.05); border:1px solid rgba(16,185,129,0.15); "
-                    f"border-radius:12px;'>"
-                    f"<div style='font-size:0.85rem; font-weight:600; color:#34d399;'>✓ {label}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+                _render_step_card(st, label, "", "done")
 
             st.markdown(
                 "<p style='text-align:center; color:#34d399; font-size:0.85rem; "
