@@ -18,7 +18,7 @@ from core.audio_engine import (
 from core.gcp_services import patch_calendar_event, upload_to_drive
 from core.llm_agent import SYSTEM_PROMPT, TEMPLATES, format_ata
 from core.pdf_builder import generate_pdf
-from core.quill_editor import text_to_html
+from core.quill_editor import html_to_text, text_to_html
 
 # --- Logging ---
 logging.basicConfig(
@@ -726,7 +726,7 @@ def main() -> None:
             st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
             if st.button("🔄 Processar novo áudio", use_container_width=True):
                 for key in ["pipeline_done", "pipeline_running", "phase1_done",
-                            "phase2_running", "ata_text", "pdf_bytes",
+                            "phase2_running", "ata_text", "ata_html", "pdf_bytes",
                             "pdf_filename", "drive_link", "segments_count",
                             "pipeline_error"]:
                     st.session_state.pop(key, None)
@@ -734,87 +734,39 @@ def main() -> None:
 
         # ── Estado: Editor de texto (phase1_done) ──
         elif st.session_state.get("phase1_done"):
+            from streamlit_quill import st_quill
+
             st.markdown(
                 "<p style='color:#818cf8; font-size:0.7rem; font-weight:700; "
                 "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:0.5rem;'>"
                 "✏️ Revisão do Conteúdo</p>",
                 unsafe_allow_html=True,
             )
+            st.info("📝 **Revise e edite o texto abaixo.** Use a toolbar para formatar: negrito, itálico, tamanho, alinhamento, listas e mais.")
 
-            tab_editor, tab_preview = st.tabs(["✏️ Editor", "👁️ Prévia"])
-
-            with tab_editor:
-                st.markdown(
-                    "<p style='color:#94a3b8; font-size:0.78rem; margin-bottom:0.5rem;'>"
-                    "Edite o texto da ata. Use os botões abaixo para formatação rápida.</p>",
-                    unsafe_allow_html=True,
+            # Converter texto plain para HTML se necessário
+            if "ata_html" not in st.session_state:
+                st.session_state["ata_html"] = text_to_html(
+                    st.session_state.get("ata_text", "")
                 )
 
-                # ── Toolbar de formatação ──
-                tb1, tb2, tb3, tb4, tb5 = st.columns(5)
-                with tb1:
-                    if st.button("Aa Título", use_container_width=True, help="Title Case"):
-                        st.session_state["ata_text"] = st.session_state.get("ata_text", "").title()
-                        st.rerun()
-                with tb2:
-                    if st.button("aa min", use_container_width=True, help="minúsculas"):
-                        st.session_state["ata_text"] = st.session_state.get("ata_text", "").lower()
-                        st.rerun()
-                with tb3:
-                    if st.button("AA MAI", use_container_width=True, help="MAIÚSCULAS"):
-                        st.session_state["ata_text"] = st.session_state.get("ata_text", "").upper()
-                        st.rerun()
-                with tb4:
-                    if st.button("## H2", use_container_width=True, help="Adicionar header"):
-                        st.session_state["ata_text"] = "## " + st.session_state.get("ata_text", "")
-                        st.rerun()
-                with tb5:
-                    if st.button("**B**", use_container_width=True, help="Negrito"):
-                        st.session_state["ata_text"] = "**" + st.session_state.get("ata_text", "") + "**"
-                        st.rerun()
+            # ── Editor Quill WYSIWYG ──
+            quill_content = st_quill(
+                value=st.session_state["ata_html"],
+                html=True,
+                toolbar=[
+                    ["bold", "italic", "underline", "strike"],
+                    [{"size": ["small", False, "large", "huge"]}],
+                    [{"align": []}, {"indent": "-1"}, {"indent": "+1"}],
+                    [{"list": "ordered"}, {"list": "bullet"}],
+                    ["clean"],
+                ],
+                key="ata_quill_editor",
+            )
 
-                # ── Text area estilizado ──
-                edited_text = st.text_area(
-                    "Editor da Ata",
-                    value=st.session_state.get("ata_text", ""),
-                    height=400,
-                    label_visibility="collapsed",
-                    key="ata_editor",
-                )
-
-                # Salvar edições
-                if edited_text != st.session_state.get("ata_text", ""):
-                    st.session_state["ata_text"] = edited_text
-
-                # Contagem
-                char_count = len(edited_text) if edited_text else 0
-                seg_count = st.session_state.get("segments_count", 0)
-                st.markdown(
-                    f"<p style='color:#64748b; font-size:0.72rem; text-align:right;'>"
-                    f"{char_count:,} caracteres · {seg_count} segmentos</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with tab_preview:
-                # Renderizar HTML preview do texto
-                preview_html = text_to_html(st.session_state.get("ata_text", ""))
-                preview_css = (
-                    "<style>"
-                    ".ata-preview { font-family: 'Segoe UI', Arial, sans-serif; "
-                    "color: #e2e8f0; line-height: 1.7; padding: 20px; "
-                    "background: rgba(30,30,46,0.5); border-radius: 12px; "
-                    "border: 1px solid rgba(255,255,255,0.06); }"
-                    ".ata-preview h2 { color: #818cf8; font-size: 1.1em; "
-                    "border-bottom: 1px solid rgba(129,140,248,0.2); "
-                    "padding-bottom: 4px; margin: 16px 0 8px; }"
-                    ".ata-preview p { margin-bottom: 8px; text-align: justify; }"
-                    ".ata-preview strong { color: #c4b5fd; }"
-                    "</style>"
-                )
-                st.markdown(
-                    f"{preview_css}<div class='ata-preview'>{preview_html}</div>",
-                    unsafe_allow_html=True,
-                )
+            # Salvar edições do Quill
+            if quill_content and quill_content != st.session_state.get("ata_html", ""):
+                st.session_state["ata_html"] = quill_content
 
             st.markdown("<div style='height:0.5rem;'></div>", unsafe_allow_html=True)
 
@@ -824,6 +776,10 @@ def main() -> None:
                 type="primary",
                 use_container_width=True,
             ):
+                # Converter HTML do editor para texto plain do pdf_builder
+                current_html = st.session_state.get("ata_html", "")
+                if current_html:
+                    st.session_state["ata_text"] = html_to_text(current_html)
                 st.session_state["phase2_running"] = True
                 st.rerun()
 
