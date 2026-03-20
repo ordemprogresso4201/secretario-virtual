@@ -302,6 +302,7 @@ STEP_LABELS = [
     ("Separação de Canais", "Identificando e isolando canais do áudio."),
     ("Transcrição de Áudio", "Convertendo fala em texto com alta precisão."),
     ("Formatação da Ata", "Aplicando estrutura e formato oficial."),
+    ("Revisão do Conteúdo", "Edição manual do texto da ata."),
     ("Geração de Documento", "Criando PDF e sincronizando com Google."),
 ]
 
@@ -340,60 +341,56 @@ def _render_step_card(placeholder, label: str, desc: str, state: str = "idle") -
         )
 
 
-def _run_pipeline(
+def _update_step_cards(step_placeholders: list | None, active_index: int) -> None:
+    """Atualiza os step cards progressivamente."""
+    if not step_placeholders:
+        return
+    for i, (lbl, dsc) in enumerate(STEP_LABELS):
+        if i < active_index:
+            _render_step_card(step_placeholders[i], lbl, dsc, "done")
+        elif i == active_index:
+            _render_step_card(step_placeholders[i], lbl, dsc, "active")
+        else:
+            _render_step_card(step_placeholders[i], lbl, dsc, "idle")
+
+
+def _run_phase1(
     uploaded_file: object,
     template: str,
     env: dict[str, str],
-    enable_drive: bool,
-    enable_calendar: bool,
     log_container,
     step_placeholders: list | None = None,
     custom_prompt: str = "",
 ) -> None:
+    """Fase 1: Upload → Separação → Transcrição → IA. Para no editor."""
     input_path = f"/tmp/upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
     left_path = "/tmp/left_vm.mp3"
     right_path = "/tmp/right_col.mp3"
-    pdf_path = "/tmp/ata.pdf"
 
-    # Registrar apenas arquivos intermediários (NÃO o PDF final)
     for p in [input_path, left_path, right_path]:
         _register_temp(p)
 
-    # Limpar qualquer estado anterior de erro
     st.session_state.pop("pipeline_error", None)
     st.session_state.pop("pipeline_done", None)
+    st.session_state.pop("phase1_done", None)
 
     try:
         with open(input_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         logger.info("Áudio salvo: %s", input_path)
 
-        # ── Progresso no painel direito ──
         with log_container:
             st.markdown(
                 "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
                 "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:1rem;'>"
-                "🛡️ Progresso</p>",
+                "🛡️ Progresso — Fase 1</p>",
                 unsafe_allow_html=True,
             )
-
             progress_bar = st.progress(0, text="Iniciando processamento...")
             status_steps = st.status("Processando áudio...", expanded=True)
 
-        # ── Atualizar step cards progressivamente ──
-        def _update_steps(active_index: int) -> None:
-            if not step_placeholders:
-                return
-            for i, (lbl, dsc) in enumerate(STEP_LABELS):
-                if i < active_index:
-                    _render_step_card(step_placeholders[i], lbl, dsc, "done")
-                elif i == active_index:
-                    _render_step_card(step_placeholders[i], lbl, dsc, "active")
-                else:
-                    _render_step_card(step_placeholders[i], lbl, dsc, "idle")
-
         # STEP 1 — Separação de canais
-        _update_steps(0)
+        _update_step_cards(step_placeholders, 0)
         with status_steps:
             st.write("🎧 **Separação de Canais** — Identificando canais do áudio...")
         progress_bar.progress(10, text="Separando canais...")
@@ -403,7 +400,7 @@ def _run_pipeline(
         progress_bar.progress(25, text="Canais separados.")
 
         # STEP 2 — Transcrição
-        _update_steps(1)
+        _update_step_cards(step_placeholders, 1)
         with status_steps:
             st.write("🎙️ **Transcrição de Áudio** — Convertendo fala em texto...")
         progress_bar.progress(30, text="Transcrevendo áudio...")
@@ -411,26 +408,61 @@ def _run_pipeline(
         merged_text = format_merged_transcript(segments)
         with status_steps:
             st.write(f"✅ Transcrição concluída ({len(segments)} segmentos).")
-        progress_bar.progress(50, text="Transcrição concluída.")
+        progress_bar.progress(60, text="Transcrição concluída.")
 
         # STEP 3 — Formatação com Gemini
-        _update_steps(2)
+        _update_step_cards(step_placeholders, 2)
         with status_steps:
             st.write("📝 **Formatação da Ata** — Aplicando estrutura oficial...")
-        progress_bar.progress(55, text="Formatando ata com IA...")
+        progress_bar.progress(65, text="Formatando ata com IA...")
         ata_text = format_ata(merged_text, template, env["GEMINI_API_KEY"], custom_prompt=custom_prompt)
         with status_steps:
             st.write(f"✅ Ata formatada ({len(ata_text)} caracteres).")
-        progress_bar.progress(75, text="Ata formatada.")
+        progress_bar.progress(100, text="Fase 1 concluída — Aguardando revisão.")
 
-        # STEP 4 — PDF + Google
-        _update_steps(3)
+        # Marca step 4 (Revisão) como ativo
+        _update_step_cards(step_placeholders, 3)
+
         with status_steps:
-            st.write("📄 **Geração de Documento** — Criando PDF e sincronizando...")
-        progress_bar.progress(80, text="Gerando PDF...")
+            st.write("---")
+            st.write("✏️ **Texto pronto para revisão.** Edite abaixo e gere o PDF.")
+        status_steps.update(label="✅ Fase 1 concluída — Revise o texto", state="complete")
+
+        # Persistir no session_state
+        st.session_state["phase1_done"] = True
+        st.session_state["ata_text"] = ata_text
+        st.session_state["segments_count"] = len(segments)
+
+    except Exception as exc:
+        error_msg = str(exc)
+        logger.error("Erro na Fase 1: %s", error_msg)
+        st.session_state["pipeline_error"] = error_msg
+        st.session_state["phase1_done"] = False
+        try:
+            progress_bar.progress(0, text="Erro no processamento!")
+            status_steps.update(label="❌ Erro no processamento", state="error")
+            with status_steps:
+                st.error(f"**Detalhes do erro:** {error_msg}")
+        except Exception:
+            pass
+
+    finally:
+        _cleanup_temp()
+
+
+def _run_phase2(
+    ata_text: str,
+    template: str,
+    env: dict[str, str],
+    enable_drive: bool,
+    enable_calendar: bool,
+) -> None:
+    """Fase 2: Gera PDF do texto editado → Upload Drive → Calendar."""
+    pdf_path = "/tmp/ata.pdf"
+
+    try:
         pdf_output = generate_pdf(ata_text, template, pdf_path)
 
-        # ── REGRA DE OURO: Salvar bytes do PDF ANTES de qualquer cleanup ──
         pdf_bytes = b""
         if pdf_output and os.path.exists(pdf_output):
             with open(pdf_output, "rb") as f:
@@ -442,59 +474,30 @@ def _run_pipeline(
             try:
                 filename = f"Ata_{template.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                 web_view_link = upload_to_drive(pdf_output, filename, env["DRIVE_FOLDER_ID"])
-                with status_steps:
-                    st.write("✅ PDF enviado para o Google Drive.")
             except Exception as drive_exc:
                 logger.warning("Falha no upload ao Drive (não crítico): %s", drive_exc)
-                with status_steps:
-                    st.write(f"⚠️ Falha ao enviar para o Drive: {drive_exc}")
 
         if enable_calendar and env.get("CALENDAR_ID") and web_view_link:
             try:
                 patch_calendar_event(env["CALENDAR_ID"], web_view_link)
-                with status_steps:
-                    st.write("✅ Agenda do Google atualizada.")
             except Exception as cal_exc:
                 logger.warning("Falha ao atualizar agenda (não crítico): %s", cal_exc)
-                with status_steps:
-                    st.write(f"⚠️ Falha ao atualizar agenda: {cal_exc}")
 
-        progress_bar.progress(100, text="Concluído!")
-        _update_steps(4)  # Marca todos como concluídos
-
-        with status_steps:
-            st.write("---")
-            st.write("🎉 **Processamento finalizado com sucesso!**")
-
-        status_steps.update(label="✅ Processamento concluído!", state="complete")
-
-        # ── Persistir resultados no session_state (REGRA DE OURO) ──
+        # Persistir resultados
         st.session_state["pipeline_done"] = True
+        st.session_state["phase1_done"] = False
         st.session_state["ata_text"] = ata_text
         st.session_state["pdf_bytes"] = pdf_bytes
         st.session_state["pdf_filename"] = f"Ata_{template.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf"
         st.session_state["drive_link"] = web_view_link
-        st.session_state["segments_count"] = len(segments)
 
     except Exception as exc:
         error_msg = str(exc)
-        logger.error("Erro no pipeline: %s", error_msg)
-
-        # ── Persistir erro no session_state para exibição garantida ──
+        logger.error("Erro na Fase 2: %s", error_msg)
         st.session_state["pipeline_error"] = error_msg
         st.session_state["pipeline_done"] = False
 
-        try:
-            progress_bar.progress(0, text="Erro no processamento!")
-            status_steps.update(label="❌ Erro no processamento", state="error")
-            with status_steps:
-                st.error(f"**Detalhes do erro:** {error_msg}")
-        except Exception:
-            pass  # UI elements may not exist if error was early
-
     finally:
-        _cleanup_temp()
-        # Limpar PDF temporário também
         try:
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
@@ -672,10 +675,12 @@ def main() -> None:
         if st.session_state.get("pipeline_error"):
             st.error(f"❌ **Erro no último processamento:** {st.session_state['pipeline_error']}")
             if st.button("🔄 Tentar novamente", use_container_width=True):
-                st.session_state.pop("pipeline_error", None)
+                for key in ["pipeline_error", "phase1_done", "pipeline_running",
+                            "phase2_running", "pipeline_done"]:
+                    st.session_state.pop(key, None)
                 st.rerun()
 
-        # ── Resultados ──
+        # ── Estado: PDF gerado (pipeline_done) ──
         if st.session_state.get("pipeline_done"):
             ata_text = st.session_state.get("ata_text", "")
             pdf_bytes = st.session_state.get("pdf_bytes", b"")
@@ -683,9 +688,8 @@ def main() -> None:
             drive_link = st.session_state.get("drive_link", "")
             seg_count = st.session_state.get("segments_count", 0)
 
-            st.success("✅ **Documento gerado com sucesso!** A ata foi redigida e está disponível para download.")
+            st.success("✅ **Documento gerado com sucesso!** A ata está disponível para download.")
 
-            # ── Download do PDF (SEMPRE disponível) ──
             if pdf_bytes:
                 st.download_button(
                     "⬇️ Baixar PDF da Ata",
@@ -716,12 +720,78 @@ def main() -> None:
 
             st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
             if st.button("🔄 Processar novo áudio", use_container_width=True):
-                for key in ["pipeline_done", "pipeline_running", "ata_text", "pdf_bytes",
+                for key in ["pipeline_done", "pipeline_running", "phase1_done",
+                            "phase2_running", "ata_text", "pdf_bytes",
                             "pdf_filename", "drive_link", "segments_count",
                             "pipeline_error"]:
                     st.session_state.pop(key, None)
                 st.rerun()
 
+        # ── Estado: Editor de texto (phase1_done) ──
+        elif st.session_state.get("phase1_done"):
+            st.markdown(
+                "<p style='color:#818cf8; font-size:0.7rem; font-weight:700; "
+                "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:0.5rem;'>"
+                "✏️ Revisão do Conteúdo</p>",
+                unsafe_allow_html=True,
+            )
+            st.info("📝 **Revise e edite o texto da ata abaixo.** Ajuste formatação, capitalização e conteúdo antes de gerar o PDF final.")
+
+            # ── Toolbar de formatação ──
+            st.markdown(
+                "<p style='color:#64748b; font-size:0.7rem; font-weight:600; "
+                "margin-bottom:0.25rem;'>Ferramentas rápidas:</p>",
+                unsafe_allow_html=True,
+            )
+            tb1, tb2, tb3 = st.columns(3)
+            with tb1:
+                if st.button("Aa Título", use_container_width=True, help="Converte para Title Case"):
+                    st.session_state["ata_text"] = st.session_state.get("ata_text", "").title()
+                    st.rerun()
+            with tb2:
+                if st.button("aa minúsculas", use_container_width=True, help="Converte tudo para minúsculas"):
+                    st.session_state["ata_text"] = st.session_state.get("ata_text", "").lower()
+                    st.rerun()
+            with tb3:
+                if st.button("AA MAIÚSCULAS", use_container_width=True, help="Converte tudo para MAIÚSCULAS"):
+                    st.session_state["ata_text"] = st.session_state.get("ata_text", "").upper()
+                    st.rerun()
+
+            # ── Editor de texto ──
+            edited_text = st.text_area(
+                "Editor da Ata",
+                value=st.session_state.get("ata_text", ""),
+                height=400,
+                label_visibility="collapsed",
+                key="ata_editor",
+            )
+
+            # Salvar edições no session_state
+            if edited_text != st.session_state.get("ata_text", ""):
+                st.session_state["ata_text"] = edited_text
+
+            # ── Contador de caracteres ──
+            char_count = len(edited_text) if edited_text else 0
+            seg_count = st.session_state.get("segments_count", 0)
+            st.markdown(
+                f"<p style='color:#64748b; font-size:0.75rem; text-align:right;'>"
+                f"{char_count:,} caracteres · {seg_count} segmentos</p>",
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("<div style='height:0.5rem;'></div>", unsafe_allow_html=True)
+
+            # ── Botão para gerar PDF ──
+            if st.button(
+                "📄  Gerar PDF Final",
+                type="primary",
+                use_container_width=True,
+            ):
+                st.session_state["phase2_running"] = True
+                st.session_state["ata_text"] = edited_text
+                st.rerun()
+
+        # ── Estado: Upload de áudio (estado inicial) ──
         elif uploaded_file is not None:
             file_mb = uploaded_file.size / (1024 * 1024)
             st.info(
@@ -741,55 +811,55 @@ def main() -> None:
                 st.rerun()
 
     with col_right:
+        # ── FASE 1: Pipeline rodando (áudio → IA) ──
         if st.session_state.get("pipeline_running"):
-            # ── Criar placeholders para step cards dinâmicos ──
             step_placeholders = []
             for lbl, dsc in STEP_LABELS:
                 ph = st.empty()
                 _render_step_card(ph, lbl, dsc, "idle")
                 step_placeholders.append(ph)
 
-            # Executar pipeline com os placeholders
             st.session_state["pipeline_running"] = False
-            _run_pipeline(
+            _run_phase1(
                 uploaded_file, template, env,
-                enable_drive, enable_calendar,
                 st.container(),
                 step_placeholders=step_placeholders,
                 custom_prompt=st.session_state.get("custom_prompt", ""),
             )
-            # Rerun SOMENTE se pipeline teve sucesso (para exibir download)
-            # Se houve erro, NÃO fazer rerun (erro já visível na tela)
-            if st.session_state.get("pipeline_done"):
+            if st.session_state.get("phase1_done"):
                 st.rerun()
 
-        elif not st.session_state.get("pipeline_done"):
+        # ── FASE 2: Gerando PDF (texto editado → PDF → Google) ──
+        elif st.session_state.get("phase2_running"):
             st.markdown(
                 "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
                 "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:1rem;'>"
-                "🛡️ Progresso</p>",
+                "🛡️ Progresso — Fase 2</p>",
                 unsafe_allow_html=True,
             )
 
-            for label, desc in STEP_LABELS:
-                st.markdown(
-                    f"<div style='padding:0.75rem 1rem; margin-bottom:0.5rem; "
-                    f"background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); "
-                    f"border-radius:12px; opacity:0.35;'>"
-                    f"<div style='font-size:0.85rem; font-weight:600; color:#e2e8f0;'>⬡ {label}</div>"
-                    f"<div style='font-size:0.75rem; color:#64748b; margin-top:2px;'>{desc}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
+            # Mostrar steps 1-4 como done, step 5 como active
+            for i, (lbl, dsc) in enumerate(STEP_LABELS):
+                if i < 4:
+                    _render_step_card(st, lbl, dsc, "done")
+                else:
+                    _render_step_card(st, lbl, dsc, "active")
+
+            with st.spinner("Gerando PDF e sincronizando..."):
+                st.session_state["phase2_running"] = False
+                _run_phase2(
+                    st.session_state.get("ata_text", ""),
+                    template, env,
+                    enable_drive, enable_calendar,
                 )
 
-            st.markdown(
-                "<p style='text-align:center; color:#475569; font-size:0.8rem; margin-top:2rem;'>"
-                "Aguardando envio de áudio para iniciar.</p>",
-                unsafe_allow_html=True,
-            )
+            if st.session_state.get("pipeline_done"):
+                st.rerun()
+            elif st.session_state.get("pipeline_error"):
+                st.rerun()
 
-        else:
-            # Show completed state
+        # ── Editor ativo: step cards de fase 1 concluídos ──
+        elif st.session_state.get("phase1_done"):
             st.markdown(
                 "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
                 "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:1rem;'>"
@@ -797,8 +867,32 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
-            for label, _ in STEP_LABELS:
-                _render_step_card(st, label, "", "done")
+            for i, (lbl, dsc) in enumerate(STEP_LABELS):
+                if i < 3:
+                    _render_step_card(st, lbl, "", "done")
+                elif i == 3:
+                    _render_step_card(st, lbl, dsc, "active")
+                else:
+                    _render_step_card(st, lbl, dsc, "idle")
+
+            st.markdown(
+                "<p style='text-align:center; color:#818cf8; font-size:0.85rem; "
+                "margin-top:1.5rem; font-weight:600;'>"
+                "✏️ Aguardando revisão do texto</p>",
+                unsafe_allow_html=True,
+            )
+
+        # ── Pipeline concluído: todos os steps verdes ──
+        elif st.session_state.get("pipeline_done"):
+            st.markdown(
+                "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
+                "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:1rem;'>"
+                "🛡️ Progresso</p>",
+                unsafe_allow_html=True,
+            )
+
+            for lbl, _ in STEP_LABELS:
+                _render_step_card(st, lbl, "", "done")
 
             st.markdown(
                 "<p style='text-align:center; color:#34d399; font-size:0.85rem; "
@@ -807,10 +901,28 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
+        # ── Estado inicial: tudo idle ──
+        else:
+            st.markdown(
+                "<p style='color:#64748b; font-size:0.7rem; font-weight:700; "
+                "letter-spacing:0.1em; text-transform:uppercase; margin-bottom:1rem;'>"
+                "🛡️ Progresso</p>",
+                unsafe_allow_html=True,
+            )
+
+            for lbl, dsc in STEP_LABELS:
+                _render_step_card(st, lbl, dsc, "idle")
+
+            st.markdown(
+                "<p style='text-align:center; color:#475569; font-size:0.8rem; margin-top:2rem;'>"
+                "Aguardando envio de áudio para iniciar.</p>",
+                unsafe_allow_html=True,
+            )
+
     # Footer
     st.markdown(
         "<p style='text-align:center; color:#334155; font-size:0.7rem; margin-top:2rem;'>"
-        "LÚMEN v1.1 · Processamento em nuvem</p>",
+        "LÚMEN v1.2 · Processamento em nuvem</p>",
         unsafe_allow_html=True,
     )
 
