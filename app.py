@@ -693,17 +693,38 @@ def main() -> None:
 
             if pdf_bytes:
                 import base64
+                import streamlit.components.v1 as components
+
                 b64 = base64.b64encode(pdf_bytes).decode()
-                download_html = (
-                    f"<a href='data:application/pdf;base64,{b64}' "
-                    f"download='{pdf_filename}' "
-                    f"style='display:block; text-align:center; padding:0.75rem 1rem; "
-                    f"background:linear-gradient(135deg,#6366f1,#818cf8); color:white; "
-                    f"border-radius:12px; text-decoration:none; font-weight:600; "
-                    f"font-size:0.95rem; transition:all 0.2s;'>"
-                    f"⬇️ Baixar PDF da Ata</a>"
-                )
-                st.markdown(download_html, unsafe_allow_html=True)
+                download_js = f"""
+                <html><body>
+                <button id="dl-btn" style="
+                    width:100%; padding:0.75rem 1rem; border:none; cursor:pointer;
+                    background:linear-gradient(135deg,#6366f1,#818cf8); color:white;
+                    border-radius:12px; font-weight:600; font-size:0.95rem;
+                    font-family:'Segoe UI',Arial,sans-serif;
+                ">⬇️ Baixar PDF da Ata</button>
+                <script>
+                function downloadPDF() {{
+                    var b64 = "{b64}";
+                    var bin = atob(b64);
+                    var bytes = new Uint8Array(bin.length);
+                    for (var i = 0; i < bin.length; i++) {{ bytes[i] = bin.charCodeAt(i); }}
+                    var blob = new Blob([bytes], {{type: "application/pdf"}});
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement("a");
+                    a.href = url;
+                    a.download = "{pdf_filename}";
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }}
+                document.getElementById("dl-btn").addEventListener("click", downloadPDF);
+                </script>
+                </body></html>
+                """
+                components.html(download_js, height=50)
             else:
                 st.warning("⚠️ O PDF não pôde ser gerado. Verifique os logs.")
 
