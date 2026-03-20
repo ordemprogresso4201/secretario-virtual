@@ -692,39 +692,14 @@ def main() -> None:
             st.success("✅ **Documento gerado com sucesso!** A ata está disponível para download.")
 
             if pdf_bytes:
-                import base64
-                import streamlit.components.v1 as components
-
-                b64 = base64.b64encode(pdf_bytes).decode()
-                download_js = f"""
-                <html><body>
-                <button id="dl-btn" style="
-                    width:100%; padding:0.75rem 1rem; border:none; cursor:pointer;
-                    background:linear-gradient(135deg,#6366f1,#818cf8); color:white;
-                    border-radius:12px; font-weight:600; font-size:0.95rem;
-                    font-family:'Segoe UI',Arial,sans-serif;
-                ">⬇️ Baixar PDF da Ata</button>
-                <script>
-                function downloadPDF() {{
-                    var b64 = "{b64}";
-                    var bin = atob(b64);
-                    var bytes = new Uint8Array(bin.length);
-                    for (var i = 0; i < bin.length; i++) {{ bytes[i] = bin.charCodeAt(i); }}
-                    var blob = new Blob([bytes], {{type: "application/pdf"}});
-                    var url = URL.createObjectURL(blob);
-                    var a = document.createElement("a");
-                    a.href = url;
-                    a.download = "{pdf_filename}";
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                }}
-                document.getElementById("dl-btn").addEventListener("click", downloadPDF);
-                </script>
-                </body></html>
-                """
-                components.html(download_js, height=50)
+                st.download_button(
+                    "⬇️ Baixar PDF da Ata",
+                    data=pdf_bytes,
+                    file_name=pdf_filename,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                )
             else:
                 st.warning("⚠️ O PDF não pôde ser gerado. Verifique os logs.")
 
