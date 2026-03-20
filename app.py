@@ -18,6 +18,7 @@ from core.audio_engine import (
 from core.gcp_services import patch_calendar_event, upload_to_drive
 from core.llm_agent import SYSTEM_PROMPT, TEMPLATES, format_ata
 from core.pdf_builder import generate_pdf
+from core.quill_editor import text_to_html
 
 # --- Logging ---
 logging.basicConfig(
@@ -691,14 +692,18 @@ def main() -> None:
             st.success("✅ **Documento gerado com sucesso!** A ata está disponível para download.")
 
             if pdf_bytes:
-                st.download_button(
-                    "⬇️ Baixar PDF da Ata",
-                    data=pdf_bytes,
-                    file_name=pdf_filename,
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True,
+                import base64
+                b64 = base64.b64encode(pdf_bytes).decode()
+                download_html = (
+                    f"<a href='data:application/pdf;base64,{b64}' "
+                    f"download='{pdf_filename}' "
+                    f"style='display:block; text-align:center; padding:0.75rem 1rem; "
+                    f"background:linear-gradient(135deg,#6366f1,#818cf8); color:white; "
+                    f"border-radius:12px; text-decoration:none; font-weight:600; "
+                    f"font-size:0.95rem; transition:all 0.2s;'>"
+                    f"⬇️ Baixar PDF da Ata</a>"
                 )
+                st.markdown(download_html, unsafe_allow_html=True)
             else:
                 st.warning("⚠️ O PDF não pôde ser gerado. Verifique os logs.")
 
@@ -735,49 +740,81 @@ def main() -> None:
                 "✏️ Revisão do Conteúdo</p>",
                 unsafe_allow_html=True,
             )
-            st.info("📝 **Revise e edite o texto da ata abaixo.** Ajuste formatação, capitalização e conteúdo antes de gerar o PDF final.")
 
-            # ── Toolbar de formatação ──
-            st.markdown(
-                "<p style='color:#64748b; font-size:0.7rem; font-weight:600; "
-                "margin-bottom:0.25rem;'>Ferramentas rápidas:</p>",
-                unsafe_allow_html=True,
-            )
-            tb1, tb2, tb3 = st.columns(3)
-            with tb1:
-                if st.button("Aa Título", use_container_width=True, help="Converte para Title Case"):
-                    st.session_state["ata_text"] = st.session_state.get("ata_text", "").title()
-                    st.rerun()
-            with tb2:
-                if st.button("aa minúsculas", use_container_width=True, help="Converte tudo para minúsculas"):
-                    st.session_state["ata_text"] = st.session_state.get("ata_text", "").lower()
-                    st.rerun()
-            with tb3:
-                if st.button("AA MAIÚSCULAS", use_container_width=True, help="Converte tudo para MAIÚSCULAS"):
-                    st.session_state["ata_text"] = st.session_state.get("ata_text", "").upper()
-                    st.rerun()
+            tab_editor, tab_preview = st.tabs(["✏️ Editor", "👁️ Prévia"])
 
-            # ── Editor de texto ──
-            edited_text = st.text_area(
-                "Editor da Ata",
-                value=st.session_state.get("ata_text", ""),
-                height=400,
-                label_visibility="collapsed",
-                key="ata_editor",
-            )
+            with tab_editor:
+                st.markdown(
+                    "<p style='color:#94a3b8; font-size:0.78rem; margin-bottom:0.5rem;'>"
+                    "Edite o texto da ata. Use os botões abaixo para formatação rápida.</p>",
+                    unsafe_allow_html=True,
+                )
 
-            # Salvar edições no session_state
-            if edited_text != st.session_state.get("ata_text", ""):
-                st.session_state["ata_text"] = edited_text
+                # ── Toolbar de formatação ──
+                tb1, tb2, tb3, tb4, tb5 = st.columns(5)
+                with tb1:
+                    if st.button("Aa Título", use_container_width=True, help="Title Case"):
+                        st.session_state["ata_text"] = st.session_state.get("ata_text", "").title()
+                        st.rerun()
+                with tb2:
+                    if st.button("aa min", use_container_width=True, help="minúsculas"):
+                        st.session_state["ata_text"] = st.session_state.get("ata_text", "").lower()
+                        st.rerun()
+                with tb3:
+                    if st.button("AA MAI", use_container_width=True, help="MAIÚSCULAS"):
+                        st.session_state["ata_text"] = st.session_state.get("ata_text", "").upper()
+                        st.rerun()
+                with tb4:
+                    if st.button("## H2", use_container_width=True, help="Adicionar header"):
+                        st.session_state["ata_text"] = "## " + st.session_state.get("ata_text", "")
+                        st.rerun()
+                with tb5:
+                    if st.button("**B**", use_container_width=True, help="Negrito"):
+                        st.session_state["ata_text"] = "**" + st.session_state.get("ata_text", "") + "**"
+                        st.rerun()
 
-            # ── Contador de caracteres ──
-            char_count = len(edited_text) if edited_text else 0
-            seg_count = st.session_state.get("segments_count", 0)
-            st.markdown(
-                f"<p style='color:#64748b; font-size:0.75rem; text-align:right;'>"
-                f"{char_count:,} caracteres · {seg_count} segmentos</p>",
-                unsafe_allow_html=True,
-            )
+                # ── Text area estilizado ──
+                edited_text = st.text_area(
+                    "Editor da Ata",
+                    value=st.session_state.get("ata_text", ""),
+                    height=400,
+                    label_visibility="collapsed",
+                    key="ata_editor",
+                )
+
+                # Salvar edições
+                if edited_text != st.session_state.get("ata_text", ""):
+                    st.session_state["ata_text"] = edited_text
+
+                # Contagem
+                char_count = len(edited_text) if edited_text else 0
+                seg_count = st.session_state.get("segments_count", 0)
+                st.markdown(
+                    f"<p style='color:#64748b; font-size:0.72rem; text-align:right;'>"
+                    f"{char_count:,} caracteres · {seg_count} segmentos</p>",
+                    unsafe_allow_html=True,
+                )
+
+            with tab_preview:
+                # Renderizar HTML preview do texto
+                preview_html = text_to_html(st.session_state.get("ata_text", ""))
+                preview_css = (
+                    "<style>"
+                    ".ata-preview { font-family: 'Segoe UI', Arial, sans-serif; "
+                    "color: #e2e8f0; line-height: 1.7; padding: 20px; "
+                    "background: rgba(30,30,46,0.5); border-radius: 12px; "
+                    "border: 1px solid rgba(255,255,255,0.06); }"
+                    ".ata-preview h2 { color: #818cf8; font-size: 1.1em; "
+                    "border-bottom: 1px solid rgba(129,140,248,0.2); "
+                    "padding-bottom: 4px; margin: 16px 0 8px; }"
+                    ".ata-preview p { margin-bottom: 8px; text-align: justify; }"
+                    ".ata-preview strong { color: #c4b5fd; }"
+                    "</style>"
+                )
+                st.markdown(
+                    f"{preview_css}<div class='ata-preview'>{preview_html}</div>",
+                    unsafe_allow_html=True,
+                )
 
             st.markdown("<div style='height:0.5rem;'></div>", unsafe_allow_html=True)
 
@@ -788,7 +825,6 @@ def main() -> None:
                 use_container_width=True,
             ):
                 st.session_state["phase2_running"] = True
-                st.session_state["ata_text"] = edited_text
                 st.rerun()
 
         # ── Estado: Upload de áudio (estado inicial) ──
